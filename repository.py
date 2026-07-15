@@ -149,3 +149,78 @@ class Repository:
 
             commit_hash = commit_data.get("parent")
 
+    def checkout(self, commit_hash: str) -> None:
+        self._require_repo()
+
+        commit_data = self._load_commit(commit_hash)
+        target_snapshot = commit_data["files"]
+
+        for path_str, blob_hash in target_snapshot.items():
+            target_path = self.root / path_str
+            ensure_dir(target_path.parent)
+
+            target_path.write_bytes(
+                self._blob_path(blob_hash).read_bytes()
+            )
+
+        self._write_head(commit_hash)
+        self._write_index({})
+
+        print(f"Checked out commit {commit_hash}")
+
+    def diff(self, filename: str) -> None:
+        self._require_repo()
+
+        file_path = (self.root / filename).resolve()
+        relative_name = rel_path(file_path, self.root)
+
+        current_text = file_path.read_text(
+            encoding="utf-8",
+            errors="replace"
+        ).splitlines()
+
+        head_snapshot = self._head_snapshot()
+        previous_text = []
+
+        if relative_name in head_snapshot:
+            blob_hash = head_snapshot[relative_name]
+            previous_blob = self._blob_path(blob_hash)
+
+            previous_text = previous_blob.read_text(
+                encoding="utf-8",
+                errors="replace"
+            ).splitlines()
+
+        diff_lines = list(
+            difflib.unified_diff(
+                previous_text,
+                current_text,
+                fromfile=f"{relative_name} (HEAD)",
+                tofile=f"{relative_name} (working)",
+                lineterm="",
+            )
+        )
+
+        if not diff_lines:
+            print("No differences found.")
+            return
+
+        print("".join(diff_lines))
+
+    def status(self) -> None:
+        self._require_repo()
+
+        head = self._read_head()
+        index_data = self._read_index()
+
+        print("=== GitLite Status ===")
+        print(f"HEAD: {head if head else 'No commits yet'}")
+        print()
+
+        print("Staged files:")
+
+        if index_data:
+            for path_str, blob_hash in index_data.items():
+                print(f"  {path_str} -> {blob_hash}")
+        else:
+            print("  (none)")
