@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import __version__
+from .errors import GitLiteError, UsageError
+from .repository import Repository
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="gitlite", description="Git-inspired local snapshots")
+    parser.add_argument("--version", action="version", version=f"gitlite {__version__}")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("init", help="initialize the current directory")
+    add = sub.add_parser("add", help="stage explicit files")
+    add.add_argument("paths", nargs="+")
+    commit = sub.add_parser("commit", help="commit the staged snapshot")
+    commit.add_argument("legacy_message", nargs="?")
+    commit.add_argument("-m", "--message")
+    sub.add_parser("log", help="show current history")
+    checkout = sub.add_parser("checkout", help="restore a full commit ID")
+    checkout.add_argument("commit")
+    diff = sub.add_parser("diff", help="show HEAD/worktree changes")
+    diff.add_argument("path")
+    sub.add_parser("status", help="show repository status")
+    return parser
+
+
+def run(args: argparse.Namespace) -> int:
+    if args.command is None:
+        build_parser().print_help()
+        return 0
+    if args.command == "init":
+        print(Repository(discover=False).init())
+        return 0
+    repo = Repository()
+    if args.command == "add":
+        print("\n".join(repo.add(args.paths)))
+    elif args.command == "commit":
+        if bool(args.message) == bool(args.legacy_message):
+            raise UsageError("Supply exactly one commit message: -m MESSAGE or legacy positional MESSAGE.")
+        commit_id, parent = repo.commit(args.message or args.legacy_message)
+        print(f"Committed as {commit_id}\nParent: {parent or 'none'}")
+    elif args.command == "log":
+        history = repo.log()
+        if not history:
+            print("No commits yet.")
+        for item in history:
+            print(f"commit {item['hash']}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {item['message']}\n")
+    elif args.command == "checkout":
+        print(f"Checked out commit {repo.checkout(args.commit)}")
+    elif args.command == "diff":
+        print(repo.diff(args.path) or "No differences found.")
+    elif args.command == "status":
+        head, index = repo.status()
+        print("=== GitLite Status ===")
+        print(f"HEAD: {head or 'No commits yet'}\n\nStaged files:")
+        print("\n".join(f"  {name} -> {blob}" for name, blob in sorted(index.items())) or "  (none)")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    try:
+        return run(parser.parse_args(argv))
+    except UsageError as exc:
+        parser.error(str(exc))
+    except (GitLiteError, OSError, UnicodeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 2

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitlite-local"
+version = "0.1.0"
+description = "A small, Git-inspired local snapshot CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/DhruvChamria/gitlite"
+
+[project.scripts]
+gitlite = "gitlite.cli:main"
+
+[tool.setuptools]
+packages = ["gitlite"]
