@@ -8,3 +8,23 @@ class RepositoryError(GitLiteError):
 
 class UsageError(GitLiteError):
     pass
+
+
+class CorruptionError(RepositoryError):
+    pass
+
+
+class PathError(RepositoryError):
+    pass
+
+
+class LockError(RepositoryError):
+    pass
+
+
+class ConflictError(RepositoryError):
+    pass
+
+
+class RecoveryError(RepositoryError):
+    pass

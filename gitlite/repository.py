@@ -4,123 +4,133 @@ import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .errors import RepositoryError
-from .models import Commit, sha1_bytes
-from .paths import discover_root
-from .storage import read_json, write_json
+from .errors import CorruptionError, PathError, RepositoryError
+from .models import Commit
+from .paths import canonical_user_path, discover_root, is_excluded, validate_snapshot
+from .storage import Store
 
 
 class Repository:
     def __init__(self, root: Path | None = None, *, discover: bool = True) -> None:
         if root is None and discover:
             root = discover_root()
-        self.root = (root or Path.cwd()).resolve()
-        self.repo_dir = self.root / ".mygit"
-        self.blobs_dir = self.repo_dir / "objects" / "blobs"
-        self.commits_dir = self.repo_dir / "objects" / "commits"
-        self.index_file = self.repo_dir / "index.json"
-        self.head_file = self.repo_dir / "HEAD"
+        self.root = (root or Path.cwd()).absolute()
+        self.store = Store(self.root)
 
     def init(self) -> str:
-        if self.repo_dir.exists():
-            return "Repository already initialized."
-        self.blobs_dir.mkdir(parents=True)
-        self.commits_dir.mkdir(parents=True)
-        write_json(self.index_file, {})
-        self.head_file.write_text("", encoding="utf-8")
-        return f"Initialized empty GitLite repository in {self.repo_dir}"
+        _, created = Store.initialize(self.root)
+        return (f"Initialized empty GitLite repository in {self.store.repo}" if created else "Repository already initialized.")
 
-    def _require_repo(self) -> None:
-        if not self.repo_dir.is_dir():
-            raise RepositoryError("Not a GitLite repository. Run `gitlite init` first.")
-
-    def _read_head(self) -> str | None:
-        self._require_repo()
-        value = self.head_file.read_text(encoding="utf-8").strip()
-        return value or None
-
-    def _read_index(self) -> dict[str, str]:
-        return read_json(self.index_file, {}) or {}
-
-    def _load_commit(self, commit_id: str) -> dict[str, object]:
-        path = self.commits_dir / f"{commit_id}.json"
-        if not path.exists():
-            raise RepositoryError(f"Commit not found: {commit_id}")
-        return read_json(path)
-
-    def _snapshot(self) -> dict[str, str]:
-        head = self._read_head()
-        return {} if head is None else dict(self._load_commit(head)["files"])
+    def _snapshot_unlocked(self) -> dict[str, str]:
+        head = self.store.read_head()
+        if head is None:
+            return {}
+        commit = self.store.read_commit(head)
+        for blob_id in commit.files.values():
+            self.store.read_blob(blob_id)
+        return dict(commit.files)
 
     def add(self, paths: list[str]) -> list[str]:
-        index = self._read_index()
-        messages = []
-        for name in paths:
-            path = (Path.cwd() / name).resolve()
-            if not path.is_file():
-                raise RepositoryError(f"File does not exist: {name}")
-            try:
-                relative = path.relative_to(self.root).as_posix()
-            except ValueError as exc:
-                raise RepositoryError(f"Path is outside repository: {name}") from exc
-            data = path.read_bytes()
-            blob_id = sha1_bytes(data)
-            blob_path = self.blobs_dir / blob_id
-            if not blob_path.exists():
-                blob_path.write_bytes(data)
-            index[relative] = blob_id
-            messages.append(f"Staged {relative} as blob {blob_id}")
-        write_json(self.index_file, index)
-        return messages
+        with self.store.locked():
+            head_snapshot = self._snapshot_unlocked()
+            index = self.store.read_index()
+            updates: list[tuple[str, Path | None, bytes | None]] = []
+            for raw in paths:
+                name, path = canonical_user_path(self.root, Path.cwd(), raw)
+                if path.exists():
+                    if not path.is_file():
+                        raise PathError(f"Not a regular file: {raw}")
+                    if is_excluded(name) and name not in head_snapshot:
+                        raise PathError(f"Excluded path cannot be added: {name}")
+                    updates.append((name, path, path.read_bytes()))
+                elif name in head_snapshot:
+                    updates.append((name, None, None))
+                else:
+                    raise PathError(f"File does not exist and is not tracked: {raw}")
+            proposed = dict(index)
+            messages = []
+            for name, _, data in updates:
+                if data is None:
+                    proposed[name] = None
+                    messages.append(f"Staged deletion: {name}")
+                else:
+                    blob_id = self.store.save_blob(data)
+                    if head_snapshot.get(name) == blob_id:
+                        proposed.pop(name, None)
+                        messages.append(f"Unstaged unchanged file: {name}")
+                    else:
+                        proposed[name] = blob_id
+                        messages.append(f"Staged {name} as blob {blob_id}")
+            effective = dict(head_snapshot)
+            for name, blob_id in proposed.items():
+                if blob_id is None:
+                    effective.pop(name, None)
+                else:
+                    effective[name] = blob_id
+            validate_snapshot(effective)
+            self.store.write_index(proposed)
+            return messages
 
     def commit(self, message: str) -> tuple[str, str | None]:
-        index = self._read_index()
-        if not index:
-            raise RepositoryError("Nothing to commit.")
-        parent = self._read_head()
-        snapshot = self._snapshot()
-        snapshot.update(index)
-        commit = Commit(parent, datetime.now(timezone.utc).isoformat(timespec="microseconds"), message, snapshot)
-        commit_id = commit.compute_hash()
-        write_json(self.commits_dir / f"{commit_id}.json", {"hash": commit_id, **commit.to_dict()})
-        self.head_file.write_text(commit_id, encoding="utf-8")
-        write_json(self.index_file, {})
-        return commit_id, parent
+        if not message.strip():
+            raise RepositoryError("Commit message must not be blank.")
+        with self.store.locked():
+            index = self.store.read_index()
+            if not index:
+                raise RepositoryError("Nothing to commit.")
+            parent = self.store.read_head()
+            snapshot = self._snapshot_unlocked()
+            for name, blob_id in index.items():
+                if blob_id is None:
+                    snapshot.pop(name, None)
+                else:
+                    self.store.read_blob(blob_id)
+                    snapshot[name] = blob_id
+            validate_snapshot(snapshot)
+            commit = Commit(parent, datetime.now(timezone.utc).isoformat(timespec="microseconds"), message, snapshot)
+            commit_id = self.store.save_commit(commit)
+            self.store.write_head(commit_id)
+            self.store.write_index({})
+            return commit_id, parent
 
     def log(self) -> list[dict[str, object]]:
-        result = []
-        commit_id = self._read_head()
-        seen = set()
-        while commit_id:
-            if commit_id in seen:
-                raise RepositoryError("Commit history contains a cycle.")
-            seen.add(commit_id)
-            commit = self._load_commit(commit_id)
-            result.append(commit)
-            commit_id = commit["parent"]
-        return result
+        with self.store.locked():
+            result = []
+            commit_id = self.store.read_head()
+            seen = set()
+            while commit_id:
+                if commit_id in seen:
+                    raise CorruptionError("Commit history contains a cycle; run `gitlite fsck`.")
+                seen.add(commit_id)
+                commit = self.store.read_commit(commit_id)
+                result.append({"hash": commit_id, **commit.to_dict()})
+                commit_id = commit.parent
+            return result
 
     def checkout(self, commit_id: str) -> str:
-        commit = self._load_commit(commit_id)
-        for name, blob_id in commit["files"].items():
-            destination = self.root / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes((self.blobs_dir / blob_id).read_bytes())
-        self.head_file.write_text(commit_id, encoding="utf-8")
-        write_json(self.index_file, {})
-        return commit_id
+        with self.store.locked():
+            commit = self.store.read_commit(commit_id)
+            for name, blob_id in commit.files.items():
+                data = self.store.read_blob(blob_id)
+                _, destination = canonical_user_path(self.root, self.root, name)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+            self.store.write_head(commit_id)
+            self.store.write_index({})
+            return commit_id
 
     def diff(self, name: str) -> str:
-        path = (Path.cwd() / name).resolve()
-        relative = path.relative_to(self.root).as_posix()
-        current = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        snapshot = self._snapshot()
-        previous = []
-        if relative in snapshot:
-            previous = (self.blobs_dir / snapshot[relative]).read_text(
-                encoding="utf-8", errors="replace"
-            ).splitlines()
-        return "\n".join(difflib.unified_diff(previous, current, fromfile=f"{relative} (HEAD)", tofile=f"{relative} (working)", lineterm=""))
+        with self.store.locked():
+            path_name, path = canonical_user_path(self.root, Path.cwd(), name)
+            if not path.is_file():
+                raise RepositoryError(f"File does not exist: {name}")
+            current = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            snapshot = self._snapshot_unlocked()
+            previous = []
+            if path_name in snapshot:
+                previous = self.store.read_blob(snapshot[path_name]).decode("utf-8", errors="replace").splitlines()
+            return "\n".join(difflib.unified_diff(previous, current, fromfile=f"{path_name} (HEAD)", tofile=f"{path_name} (working)", lineterm=""))
 
-    def status(self) -> tuple[str | None, dict[str, str]]:
-        return self._read_head(), self._read_index()
+    def status(self) -> tuple[str | None, dict[str, str | None]]:
+        with self.store.locked():
+            return self.store.read_head(), self.store.read_index()
