@@ -57,3 +57,9 @@ class Commit:
         if commit.compute_hash() != expected_hash:
             raise CorruptionError(f"Commit {expected_hash} content does not match its hash.")
         return commit
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    head: Optional[str]
+    rows: tuple[str, ...]

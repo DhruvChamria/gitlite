@@ -86,8 +86,12 @@ class StorageTests(unittest.TestCase):
                 child.stdin.write("\n")
                 child.stdin.flush()
                 child.wait(timeout=5)
+                child.stdin.close()
+                child.stdout.close()
             with working_directory(root):
-                self.assertEqual(Repository().status(), (None, {}))
+                status = Repository().status()
+                self.assertIsNone(status.head)
+                self.assertEqual(status.rows, ())
 
 
 if __name__ == "__main__":

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import difflib
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import stat
 
 from .errors import CorruptionError, PathError, RepositoryError
-from .models import Commit
-from .paths import canonical_user_path, discover_root, is_excluded, validate_snapshot
+from .models import Commit, StatusResult
+from .models import sha1_bytes
+from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, is_excluded, is_link_like, validate_snapshot
 from .storage import Store
 
 
@@ -29,6 +32,16 @@ class Repository:
         for blob_id in commit.files.values():
             self.store.read_blob(blob_id)
         return dict(commit.files)
+
+    @staticmethod
+    def _effective(head: dict[str, str], index: dict[str, str | None]) -> dict[str, str]:
+        result = dict(head)
+        for name, blob_id in index.items():
+            if blob_id is None:
+                result.pop(name, None)
+            else:
+                result[name] = blob_id
+        return result
 
     def add(self, paths: list[str]) -> list[str]:
         with self.store.locked():
@@ -61,15 +74,43 @@ class Repository:
                     else:
                         proposed[name] = blob_id
                         messages.append(f"Staged {name} as blob {blob_id}")
-            effective = dict(head_snapshot)
-            for name, blob_id in proposed.items():
-                if blob_id is None:
-                    effective.pop(name, None)
-                else:
-                    effective[name] = blob_id
+            effective = self._effective(head_snapshot, proposed)
             validate_snapshot(effective)
             self.store.write_index(proposed)
             return messages
+
+    def remove(self, paths: list[str]) -> list[str]:
+        with self.store.locked():
+            head = self._snapshot_unlocked()
+            index = self.store.read_index()
+            names = [canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths]
+            for name in names:
+                if name not in head and name not in index:
+                    raise RepositoryError(f"Path is not tracked or staged: {name}")
+            proposed = dict(index)
+            messages = []
+            for name in names:
+                if name in head:
+                    proposed[name] = None
+                else:
+                    proposed.pop(name, None)
+                messages.append(f"Staged removal (working file kept): {name}")
+            validate_snapshot(self._effective(head, proposed))
+            self.store.write_index(proposed)
+            return messages
+
+    def unstage(self, paths: list[str]) -> list[str]:
+        with self.store.locked():
+            index = self.store.read_index()
+            names = [canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths]
+            missing = [name for name in names if name not in index]
+            if missing:
+                raise RepositoryError(f"Path is not staged: {missing[0]}")
+            proposed = dict(index)
+            for name in names:
+                proposed.pop(name)
+            self.store.write_index(proposed)
+            return [f"Unstaged (working file kept): {name}" for name in names]
 
     def commit(self, message: str) -> tuple[str, str | None]:
         if not message.strip():
@@ -79,13 +120,9 @@ class Repository:
             if not index:
                 raise RepositoryError("Nothing to commit.")
             parent = self.store.read_head()
-            snapshot = self._snapshot_unlocked()
-            for name, blob_id in index.items():
-                if blob_id is None:
-                    snapshot.pop(name, None)
-                else:
-                    self.store.read_blob(blob_id)
-                    snapshot[name] = blob_id
+            snapshot = self._effective(self._snapshot_unlocked(), index)
+            for blob_id in snapshot.values():
+                self.store.read_blob(blob_id)
             validate_snapshot(snapshot)
             commit = Commit(parent, datetime.now(timezone.utc).isoformat(timespec="microseconds"), message, snapshot)
             commit_id = self.store.save_commit(commit)
@@ -131,6 +168,62 @@ class Repository:
                 previous = self.store.read_blob(snapshot[path_name]).decode("utf-8", errors="replace").splitlines()
             return "\n".join(difflib.unified_diff(previous, current, fromfile=f"{path_name} (HEAD)", tofile=f"{path_name} (working)", lineterm=""))
 
-    def status(self) -> tuple[str | None, dict[str, str | None]]:
+    def _scan_worktree(self) -> tuple[dict[str, bytes], list[str]]:
+        regular: dict[str, bytes] = {}
+        unsupported: list[str] = []
+
+        def walk(directory: Path, prefix: tuple[str, ...] = ()) -> None:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    folded = entry.name.casefold()
+                    relative_parts = (*prefix, entry.name)
+                    name = "/".join(relative_parts)
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        unsupported.append(name)
+                        continue
+                    if stat.S_ISDIR(info.st_mode) and not is_link_like(Path(entry.path)):
+                        if folded not in EXCLUDED_DIRS:
+                            walk(Path(entry.path), relative_parts)
+                    elif stat.S_ISREG(info.st_mode) and not is_link_like(Path(entry.path)):
+                        if not is_excluded(name):
+                            regular[name] = Path(entry.path).read_bytes()
+                    elif folded not in EXCLUDED_DIRS and not is_excluded(name):
+                        unsupported.append(name)
+
+        walk(self.root)
+        return regular, unsupported
+
+    def status(self) -> StatusResult:
         with self.store.locked():
-            return self.store.read_head(), self.store.read_index()
+            head_id = self.store.read_head()
+            head = self._snapshot_unlocked()
+            index = self.store.read_index()
+            effective = self._effective(head, index)
+            regular, unsupported = self._scan_worktree()
+            rows: list[str] = []
+            for name in sorted(set(head) | set(effective)):
+                before = head.get(name)
+                staged = effective.get(name)
+                first = " "
+                if before is None and staged is not None:
+                    first = "A"
+                elif before is not None and staged is None:
+                    first = "D"
+                elif before != staged:
+                    first = "M"
+                second = " "
+                if staged is not None:
+                    data = regular.get(name)
+                    if data is None:
+                        second = "D"
+                    elif sha1_bytes(data) != staged:
+                        second = "M"
+                if first != " " or second != " ":
+                    rows.append(f"{first}{second} {name}")
+            for name in sorted(set(regular) - set(effective)):
+                rows.append(f"?? {name}")
+            for name in sorted(unsupported):
+                rows.append(f"!! {name}")
+            return StatusResult(head_id, tuple(rows))
