@@ -34,6 +34,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(log.returncode, 0, log.stderr)
             self.assertIn(commit_id, log.stdout)
             (root / "note.txt").write_text("two\n", encoding="utf-8")
+            refused = self.run_cli(root, "checkout", commit_id)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("modified", refused.stderr)
+            (root / "note.txt").write_text("one\n", encoding="utf-8")
             self.assertEqual(self.run_cli(root, "checkout", commit_id).returncode, 0)
             self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "one\n")
 

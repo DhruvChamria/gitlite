@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("log", help="show current history")
     checkout = sub.add_parser("checkout", help="restore a full commit ID")
     checkout.add_argument("commit")
+    sub.add_parser("recover", help="roll back one interrupted commit or checkout")
     diff = sub.add_parser("diff", help="show HEAD/worktree changes")
     diff.add_argument("path")
     sub.add_parser("status", help="show repository status")
@@ -58,6 +59,14 @@ def run(args: argparse.Namespace) -> int:
             print(f"commit {item['hash']}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {item['message']}\n")
     elif args.command == "checkout":
         print(f"Checked out commit {repo.checkout(args.commit)}")
+    elif args.command == "recover":
+        recovered, leftovers = repo.recover()
+        if not recovered:
+            print("No interrupted operation to recover.")
+        else:
+            print("Recovered interrupted operation by rolling back.")
+            if leftovers:
+                print("Preserved nonempty created directories: " + ", ".join(leftovers))
     elif args.command == "diff":
         print(repo.diff(args.path) or "No differences found.")
     elif args.command == "status":

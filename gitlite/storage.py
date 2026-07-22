@@ -38,11 +38,11 @@ def read_json(path: Path) -> Any:
         raise CorruptionError(f"Malformed JSON in {path.name}: {exc}") from exc
 
 
-def atomic_write(path: Path, data: bytes) -> None:
+def atomic_write(path: Path, data: bytes, *, reject_hardlinks: bool = True) -> None:
     ensure_no_links(path.parent, stop=path.parent)
     if path.exists() or is_link_like(path):
         ensure_no_links(path, stop=path.parent)
-        if path.stat().st_nlink > 1:
+        if reject_hardlinks and path.stat().st_nlink > 1:
             raise RepositoryError(f"Refusing to replace hard-linked metadata: {path.name}")
     handle = tempfile.NamedTemporaryFile(prefix=".gitlite-tmp-", dir=path.parent, delete=False)
     temp = Path(handle.name)
