@@ -22,12 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
     commit = sub.add_parser("commit", help="commit the staged snapshot")
     commit.add_argument("legacy_message", nargs="?")
     commit.add_argument("-m", "--message")
-    sub.add_parser("log", help="show current history")
+    log = sub.add_parser("log", help="show current history")
+    log.add_argument("--all", action="store_true", dest="all_commits", help="show every stored commit")
+    show = sub.add_parser("show", help="inspect a snapshot")
+    show.add_argument("commit", nargs="?")
     checkout = sub.add_parser("checkout", help="restore a full commit ID")
     checkout.add_argument("commit")
     sub.add_parser("recover", help="roll back one interrupted commit or checkout")
-    diff = sub.add_parser("diff", help="show HEAD/worktree changes")
-    diff.add_argument("path")
+    diff = sub.add_parser("diff", help="show HEAD/worktree changes (or HEAD/index with --staged)")
+    diff.add_argument("path", nargs="?")
+    diff.add_argument("--staged", action="store_true")
     sub.add_parser("status", help="show repository status")
     return parser
 
@@ -52,11 +56,17 @@ def run(args: argparse.Namespace) -> int:
         commit_id, parent = repo.commit(args.message or args.legacy_message)
         print(f"Committed as {commit_id}\nParent: {parent or 'none'}")
     elif args.command == "log":
-        history = repo.log()
+        history = repo.log(all_commits=args.all_commits)
         if not history:
             print("No commits yet.")
         for item in history:
-            print(f"commit {item['hash']}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {item['message']}\n")
+            marker = " (HEAD)" if item.get("is_head") else ""
+            print(f"commit {item['hash']}{marker}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {_safe(item['message'])}\n")
+    elif args.command == "show":
+        item = repo.show(args.commit)
+        print(f"commit {item['hash']}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {_safe(item['message'])}")
+        for name, blob in sorted(item["files"].items()):
+            print(f"{name} {blob}")
     elif args.command == "checkout":
         print(f"Checked out commit {repo.checkout(args.commit)}")
     elif args.command == "recover":
@@ -68,7 +78,7 @@ def run(args: argparse.Namespace) -> int:
             if leftovers:
                 print("Preserved nonempty created directories: " + ", ".join(leftovers))
     elif args.command == "diff":
-        print(repo.diff(args.path) or "No differences found.")
+        print(repo.diff(args.path, staged=args.staged) or "No differences found.")
     elif args.command == "status":
         status = repo.status()
         print("=== GitLite Status ===")
@@ -76,6 +86,10 @@ def run(args: argparse.Namespace) -> int:
         print("XY Path (X: HEAD/index, Y: index/worktree)")
         print("\n".join(status.rows) if status.rows else "Working tree clean.")
     return 0
+
+
+def _safe(value: str) -> str:
+    return "".join(char if char.isprintable() and char not in "\r\n\t" else f"\\u{ord(char):04x}" for char in value)
 
 
 def main(argv: list[str] | None = None) -> int:

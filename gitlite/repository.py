@@ -159,9 +159,21 @@ class Repository:
                 raise
             return commit_id, parent
 
-    def log(self) -> list[dict[str, object]]:
+    def log(self, *, all_commits: bool = False) -> list[dict[str, object]]:
         with self.store.locked():
             self._ensure_ready()
+            if all_commits:
+                result = []
+                head = self.store.read_head()
+                for path in self.store.commits.iterdir():
+                    if not path.is_file() or not path.name.endswith(".json"):
+                        raise CorruptionError(f"Invalid commit object filename: {path.name}; run `gitlite fsck`.")
+                    commit_id = path.name[:-5]
+                    commit = self.store.read_commit(commit_id)
+                    result.append({"hash": commit_id, "is_head": commit_id == head, **commit.to_dict()})
+                result.sort(key=lambda item: item["hash"])
+                result.sort(key=lambda item: datetime.fromisoformat(item["timestamp"]), reverse=True)
+                return result
             result = []
             commit_id = self.store.read_head()
             seen = set()
@@ -173,6 +185,15 @@ class Repository:
                 result.append({"hash": commit_id, **commit.to_dict()})
                 commit_id = commit.parent
             return result
+
+    def show(self, commit_id: str | None = None) -> dict[str, object]:
+        with self.store.locked():
+            self._ensure_ready()
+            selected = commit_id or self.store.read_head()
+            if selected is None:
+                raise RepositoryError("No commits yet.")
+            commit = self.store.read_commit(selected)
+            return {"hash": selected, **commit.to_dict()}
 
     def checkout(self, commit_id: str) -> str:
         with self.store.locked():
@@ -255,18 +276,75 @@ class Repository:
             journal = load_journal(self.store)
             return True, rollback(self.store, journal)
 
-    def diff(self, name: str) -> str:
+    @staticmethod
+    def _render_diff(name: str, before: bytes | None, after: bytes | None) -> str:
+        if before is None and after == b"":
+            return f"Added empty file: {name}"
+        if before == b"" and after is None:
+            return f"Deleted empty file: {name}"
+        if before is None:
+            before_data = b""
+        else:
+            before_data = before
+        if after is None:
+            after_data = b""
+        else:
+            after_data = after
+        if before is not None and after is not None and before_data == after_data:
+            return ""
+        if b"\0" in before_data or b"\0" in after_data:
+            return f"Binary files differ: {name}"
+        try:
+            before_text = before_data.decode("utf-8")
+            after_text = after_data.decode("utf-8")
+        except UnicodeDecodeError:
+            return f"Binary files differ: {name}"
+        fromfile = "/dev/null" if before is None else f"a/{name}"
+        tofile = "/dev/null" if after is None else f"b/{name}"
+        lines = list(difflib.unified_diff(
+            before_text.splitlines(keepends=True),
+            after_text.splitlines(keepends=True),
+            fromfile=fromfile,
+            tofile=tofile,
+            lineterm="\n",
+        ))
+        if not lines:
+            return f"Line endings differ: {name}"
+        rendered = "".join(line if line.endswith("\n") else line + "\n" for line in lines).rstrip("\n")
+        if (before_data and not before_data.endswith((b"\n", b"\r"))) or (after_data and not after_data.endswith((b"\n", b"\r"))):
+            rendered += "\n\\ No newline at end of file"
+        return rendered
+
+    def diff(self, name: str | None = None, *, staged: bool = False) -> str:
         with self.store.locked():
             self._ensure_ready()
-            path_name, path = canonical_user_path(self.root, Path.cwd(), name)
-            if not path.is_file():
-                raise RepositoryError(f"File does not exist: {name}")
-            current = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            snapshot = self._snapshot_unlocked()
-            previous = []
-            if path_name in snapshot:
-                previous = self.store.read_blob(snapshot[path_name]).decode("utf-8", errors="replace").splitlines()
-            return "\n".join(difflib.unified_diff(previous, current, fromfile=f"{path_name} (HEAD)", tofile=f"{path_name} (working)", lineterm=""))
+            head = self._snapshot_unlocked()
+            effective = self._effective(head, self.store.read_index())
+            selected: list[str]
+            explicit_path = None
+            if name is not None:
+                explicit_path, path = canonical_user_path(self.root, Path.cwd(), name)
+                known = explicit_path in head or explicit_path in effective
+                if staged and not known:
+                    raise RepositoryError(f"Path is not tracked or staged: {explicit_path}")
+                if not staged and not known and not path.is_file():
+                    raise RepositoryError(f"Path does not exist and is not tracked: {explicit_path}")
+                selected = [explicit_path]
+            else:
+                selected = sorted(set(head) | set(effective))
+            output = []
+            for path_name in selected:
+                before = self.store.read_blob(head[path_name]) if path_name in head else None
+                if staged:
+                    after = self.store.read_blob(effective[path_name]) if path_name in effective else None
+                else:
+                    path = self.root / Path(*path_name.split("/"))
+                    canonical_user_path(self.root, self.root, path_name)
+                    after = path.read_bytes() if path.is_file() else None
+                rendered = self._render_diff(path_name, before, after)
+                if rendered:
+                    output.append(rendered)
+            return "\n\n".join(output)
 
     def _scan_worktree(self) -> tuple[dict[str, bytes], list[str]]:
         regular: dict[str, bytes] = {}
