@@ -155,6 +155,14 @@ class Store:
         with RepositoryLock(self.lock_path):
             yield
 
+    @contextmanager
+    def diagnostic_lock(self) -> Iterator[None]:
+        if not self.repo.is_dir() or is_link_like(self.repo):
+            raise CorruptionError("Repository metadata directory is missing or unsafe.")
+        ensure_no_links(self.repo, stop=self.root)
+        with RepositoryLock(self.lock_path):
+            yield
+
     def read_head(self) -> str | None:
         raw = self.head.read_text(encoding="utf-8").strip()
         return None if raw == "" else validate_id(raw, "HEAD")

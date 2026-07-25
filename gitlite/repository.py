@@ -7,7 +7,7 @@ from pathlib import Path
 import stat
 
 from .errors import ConflictError, CorruptionError, PathError, RecoveryError, RepositoryError
-from .models import Commit, StatusResult
+from .models import Commit, IntegrityResult, StatusResult
 from .models import sha1_bytes
 from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, is_excluded, is_link_like, validate_snapshot
 from .storage import Store, atomic_write
@@ -275,6 +275,96 @@ class Repository:
                 return False, []
             journal = load_journal(self.store)
             return True, rollback(self.store, journal)
+
+    def fsck(self) -> IntegrityResult:
+        errors: list[str] = []
+        information: list[str] = []
+        commits: dict[str, Commit] = {}
+        blobs: set[str] = set()
+        head: str | None = None
+        index: dict[str, str | None] = {}
+        with self.store.diagnostic_lock():
+            for directory, label in ((self.store.objects, "objects"), (self.store.blobs, "blob"), (self.store.commits, "commit")):
+                if not directory.is_dir() or is_link_like(directory):
+                    errors.append(f"Missing or unsafe {label} directory: {directory.relative_to(self.root)}")
+            try:
+                head = self.store.read_head()
+            except Exception as exc:
+                errors.append(f"HEAD: {exc}")
+            try:
+                index = self.store.read_index()
+                for name, blob in index.items():
+                    if blob is not None:
+                        try:
+                            self.store.read_blob(blob)
+                        except Exception as exc:
+                            errors.append(f"index {name}: {exc}")
+            except Exception as exc:
+                errors.append(f"index.json: {exc}")
+            if self.store.blobs.is_dir():
+                for path in sorted(self.store.blobs.iterdir(), key=lambda item: item.name):
+                    if path.name.startswith(".gitlite-tmp-"):
+                        information.append(f"Interruption residue preserved: objects/blobs/{path.name}")
+                        continue
+                    try:
+                        self.store.read_blob(path.name)
+                        blobs.add(path.name)
+                    except Exception as exc:
+                        errors.append(f"blob {path.name}: {exc}")
+            if self.store.commits.is_dir():
+                for path in sorted(self.store.commits.iterdir(), key=lambda item: item.name):
+                    if path.name.startswith(".gitlite-tmp-"):
+                        information.append(f"Interruption residue preserved: objects/commits/{path.name}")
+                        continue
+                    if not path.name.endswith(".json"):
+                        errors.append(f"Invalid commit object filename: {path.name}")
+                        continue
+                    commit_id = path.name[:-5]
+                    try:
+                        commits[commit_id] = self.store.read_commit(commit_id)
+                    except Exception as exc:
+                        errors.append(f"commit {commit_id}: {exc}")
+            for commit_id, commit in commits.items():
+                if commit.parent is not None and commit.parent not in commits:
+                    errors.append(f"commit {commit_id}: missing parent {commit.parent}")
+                for name, blob in commit.files.items():
+                    if blob not in blobs:
+                        errors.append(f"commit {commit_id} path {name}: missing or corrupt blob {blob}")
+            state: dict[str, int] = {}
+            def visit(commit_id: str, trail: list[str]) -> None:
+                if state.get(commit_id) == 1:
+                    errors.append("Commit parent cycle: " + " -> ".join((*trail, commit_id)))
+                    return
+                if state.get(commit_id) == 2 or commit_id not in commits:
+                    return
+                state[commit_id] = 1
+                parent = commits[commit_id].parent
+                if parent is not None:
+                    visit(parent, [*trail, commit_id])
+                state[commit_id] = 2
+            for commit_id in sorted(commits):
+                visit(commit_id, [])
+            if head is not None and head not in commits:
+                errors.append(f"HEAD references missing or corrupt commit {head}")
+            if self.store.transaction.exists():
+                try:
+                    load_journal(self.store)
+                    errors.append("Pending transaction requires `gitlite recover`.")
+                except Exception as exc:
+                    errors.append(f"transaction.json: {exc}")
+            referenced = {blob for commit in commits.values() for blob in commit.files.values()}
+            referenced.update(blob for blob in index.values() if blob is not None)
+            for blob in sorted(blobs - referenced):
+                information.append(f"Unreachable blob retained: {blob}")
+            if head is not None:
+                reachable = set()
+                current = head
+                while current in commits and current not in reachable:
+                    reachable.add(current)
+                    current = commits[current].parent
+                for commit_id in sorted(set(commits) - reachable):
+                    information.append(f"Unreachable commit retained: {commit_id}")
+        return IntegrityResult(len(commits), len(blobs), tuple(sorted(set(errors))), tuple(sorted(set(information))))
 
     @staticmethod
     def _render_diff(name: str, before: bytes | None, after: bytes | None) -> str:

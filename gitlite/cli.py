@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     checkout = sub.add_parser("checkout", help="restore a full commit ID")
     checkout.add_argument("commit")
     sub.add_parser("recover", help="roll back one interrupted commit or checkout")
+    sub.add_parser("fsck", help="validate repository integrity without repairs")
     diff = sub.add_parser("diff", help="show HEAD/worktree changes (or HEAD/index with --staged)")
     diff.add_argument("path", nargs="?")
     diff.add_argument("--staged", action="store_true")
@@ -77,6 +78,16 @@ def run(args: argparse.Namespace) -> int:
             print("Recovered interrupted operation by rolling back.")
             if leftovers:
                 print("Preserved nonempty created directories: " + ", ".join(leftovers))
+    elif args.command == "fsck":
+        result = repo.fsck()
+        for item in result.information:
+            print(f"info: {item}")
+        for item in result.errors:
+            print(f"error: {item}", file=sys.stderr)
+        if result.errors:
+            print(f"fsck found {len(result.errors)} error(s).", file=sys.stderr)
+            return 1
+        print(f"fsck OK: {result.commits} commit(s), {result.blobs} blob(s).")
     elif args.command == "diff":
         print(repo.diff(args.path, staged=args.staged) or "No differences found.")
     elif args.command == "status":

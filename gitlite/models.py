@@ -63,3 +63,11 @@ class Commit:
 class StatusResult:
     head: Optional[str]
     rows: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IntegrityResult:
+    commits: int
+    blobs: int
+    errors: tuple[str, ...]
+    information: tuple[str, ...]
