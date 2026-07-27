@@ -1,79 +1,87 @@
 # GitLite
 
-A Git-inspired version control system built from scratch in Python. Implements the core internals of how Git actually works - content-addressable blob storage, immutable commit objects with parent references, staging index, and unified diffs - without any external dependencies.
+GitLite is a small, Git-inspired local snapshot CLI for learning version-control internals; it is not Git-compatible.
 
-## How it works
+It provides content-addressed blobs, immutable parent-linked snapshots, explicit staging and deletions, H/I/W status and diffs, conservative checkout with recovery, and repository integrity diagnostics. It has no third-party runtime dependencies.
 
-```
-Working directory
-      │  git add
-      ▼
-  Index (staging)          ← index.json maps filename → blob hash
-      │  git commit
-      ▼
- Commit object             ← JSON with hash, timestamp, message, parent, files{}
-      │
-      ▼
- Blob store                ← .mygit/objects/blobs/<sha1> (raw file content)
+## Install
+
+GitLite requires Python 3.11 or newer.
+
+```console
+python -m pip install .
+gitlite --version
 ```
 
-Each file is stored exactly once by its SHA-1 hash - identical content across commits shares the same blob. Commits form a linked list via `parent` references, which is how `log` walks history.
+From a source checkout, `python -m gitlite` and `python main.py` are equivalent entry points. For development, use `python -m pip install -e .`.
+
+## Five-minute quick start
+
+Run these commands in a disposable scratch directory, not in a project with irreplaceable uncommitted work:
+
+```console
+mkdir gitlite-scratch
+cd gitlite-scratch
+gitlite init
+python -c "from pathlib import Path; Path('notes.txt').write_text('first note\n', encoding='utf-8')"
+gitlite add notes.txt
+gitlite diff --staged
+gitlite commit -m "initial notes"
+gitlite status
+gitlite log
+gitlite fsck
+```
+
+The complete reproducible walkthrough is available in [docs/demo.md](docs/demo.md), or run `python examples/demo.py`.
 
 ## Commands
 
-```bash
-python main.py init                        # create .mygit/ directory
-python main.py add <file> [file ...]       # stage one or more files
-python main.py commit "message"            # snapshot staged files
-python main.py log                         # walk commit history
-python main.py checkout <commit-hash>      # restore files to a past commit
-python main.py diff <file>                 # unified diff: HEAD vs working copy
-python main.py status                      # show HEAD and staged files
-```
-
-## Getting Started
-
-**Prerequisites:** Python 3.9+, no external packages needed.
-
-```bash
-git clone https://github.com/DhruvChamria/gitlite.git
-cd gitlite
-
-python main.py init
-echo "hello" > test.txt
-python main.py add test.txt
-python main.py commit "first commit"
-python main.py log
-```
-
-## Project Structure
-
-```
-gitlite/
-├── main.py          # CLI entry point, command dispatch
-├── repository.py    # Core VCS logic (init, add, commit, log, checkout, diff, status)
-├── commit.py        # Commit dataclass + SHA-1 hash computation
-└── utils.py         # sha1_bytes, JSON/text I/O, path helpers
-```
-
-At runtime, a `.mygit/` directory is created:
-
-```
-.mygit/
-├── HEAD                        # stores current commit hash
-├── index.json                  # staging area: { filename: blob_hash }
-└── objects/
-    ├── blobs/<sha1>             # raw file content, addressed by hash
-    └── commits/<sha1>.json     # commit metadata + file snapshot
-```
-
-## Key Concepts Demonstrated
-
-| Concept | Implementation |
+| Command | Purpose |
 |---|---|
-| Content-addressable storage | `_save_blob` - files stored by SHA-1, deduped automatically |
-| Immutable commit objects | `Commit.compute_hash()` - hash derived from content, not a counter |
-| Linked commit history | Each commit stores `parent` hash; `log` walks the chain |
-| Staging index | `index.json` accumulates adds; cleared after each commit |
-| Unified diff | `difflib.unified_diff` comparing HEAD blob vs working file |
-| Snapshot model | Each commit stores a full `{filename: blob_hash}` map, not deltas |
+| `gitlite init` | Initialize the current directory. |
+| `gitlite add PATH [PATH ...]` | Stage exact file bytes or a tracked deletion. |
+| `gitlite rm PATH [PATH ...]` | Stage removal while keeping working files. |
+| `gitlite unstage PATH [PATH ...]` | Remove paths from staging while keeping working files. |
+| `gitlite commit -m MESSAGE` | Commit the effective staged snapshot. Legacy `commit "message"` also works. |
+| `gitlite status` | Show the current HEAD and two-column H/I/W state. |
+| `gitlite diff [PATH]` | Compare HEAD with working files. |
+| `gitlite diff [PATH] --staged` | Compare HEAD with the staged snapshot. |
+| `gitlite log [--all]` | Walk current ancestry or list every stored snapshot. |
+| `gitlite show [COMMIT]` | Inspect HEAD or one full commit ID. |
+| `gitlite checkout COMMIT` | Safely switch to a full snapshot when tracked state is clean. |
+| `gitlite recover` | Roll back one interrupted commit or checkout. |
+| `gitlite fsck` | Diagnose metadata and object integrity without repair. |
+
+Every subcommand supports `--help`. User and repository failures go to stderr with exit 1; command-line syntax failures use exit 2.
+
+## Architecture
+
+```text
+Working tree (W)
+      | gitlite add / rm / unstage
+      v
+Index delta -> effective staged snapshot (I)
+      | gitlite commit
+      v
+HEAD snapshot (H) -> parent snapshot -> ...
+      |                         |
+      +---- commit objects -----+---- blob objects by SHA-1
+```
+
+The index is a delta over HEAD: blob IDs stage additions or changes and `null` stages deletions. Objects are immutable; HEAD, the index, and the operation journal are the small mutable pointers. See [architecture](docs/architecture.md), [safety and recovery](docs/safety.md), and the [approved implementation plan](docs/implementation-plan.md).
+
+## Test
+
+```console
+python -m unittest discover -s tests -v
+python examples/demo.py
+git diff --check
+```
+
+CI is configured for Windows and Linux with Python 3.11 and 3.14. A checked-in workflow is configuration, not a claim that hosted jobs have run.
+
+## Limits
+
+GitLite intentionally has no branches, merges, remotes, recursive add, general ignore language, abbreviated IDs, force checkout, compression, permission tracking, or symlink tracking. It stores regular-file names and bytes, not permissions or timestamps. SHA-1 is retained for educational content addressing and format compatibility, not adversarial authenticity.
+
+Use local filesystems. Cooperative locking does not protect against hostile external writers, network-filesystem behavior, process-wide atomic visibility, or power loss. Snapshots are not a substitute for independent backups. Read [docs/safety.md](docs/safety.md) before using checkout or recovery.
