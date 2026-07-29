@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from gitlite.errors import ConflictError, CorruptionError, RecoveryError
+from gitlite.errors import ConflictError, CorruptionError, PathError, RecoveryError
 from gitlite.repository import Repository
 from gitlite.storage import atomic_write
 from gitlite.transactions import write_journal
@@ -68,6 +68,24 @@ class CheckoutRecoveryTests(unittest.TestCase):
                 repo.checkout(second)
             self.assertEqual((root / "a.txt").read_bytes(), before)
             self.assertEqual(repo.store.read_head(), first)
+
+    def test_checkout_rejects_existing_directory_case_collision(self):
+        with tempfile.TemporaryDirectory() as temp, working_directory(Path(temp)):
+            root = Path(temp)
+            repo = Repository(root, discover=False)
+            repo.init()
+            (root / "Folder").mkdir()
+            (root / "Folder/a.txt").write_bytes(b"a")
+            repo.add(["Folder/a.txt"])
+            commit_id, _ = repo.commit("folder")
+            repo.remove(["Folder/a.txt"])
+            repo.commit("empty")
+            (root / "Folder/a.txt").unlink()
+            (root / "Folder").rmdir()
+            (root / "folder").mkdir()
+            with self.assertRaises(PathError) as caught:
+                repo.checkout(commit_id)
+            self.assertIn("collides portably", str(caught.exception))
 
     def test_interrupted_checkout_rolls_back_and_pending_commands_refuse(self):
         with tempfile.TemporaryDirectory() as temp, working_directory(Path(temp)):

@@ -30,6 +30,8 @@ def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def read_json(path: Path) -> Any:
     try:
         ensure_no_links(path, stop=path.parent)
+        if path.stat().st_nlink > 1:
+            raise CorruptionError(f"Hard-linked metadata file is unsupported: {path.name}")
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle, object_pairs_hook=_reject_duplicates)
     except FileNotFoundError as exc:
@@ -164,6 +166,8 @@ class Store:
             yield
 
     def read_head(self) -> str | None:
+        if not self.head.is_file() or is_link_like(self.head) or self.head.stat().st_nlink > 1:
+            raise CorruptionError("HEAD is missing or unsafe.")
         raw = self.head.read_text(encoding="utf-8").strip()
         return None if raw == "" else validate_id(raw, "HEAD")
 

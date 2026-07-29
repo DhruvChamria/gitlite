@@ -9,7 +9,7 @@ import stat
 from .errors import ConflictError, CorruptionError, PathError, RecoveryError, RepositoryError
 from .models import Commit, IntegrityResult, StatusResult
 from .models import sha1_bytes
-from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, is_excluded, is_link_like, validate_snapshot
+from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, ensure_portable_existing_path, is_excluded, is_link_like, validate_snapshot
 from .storage import Store, atomic_write
 from .transactions import load_journal, rollback, write_journal
 
@@ -215,6 +215,8 @@ class Repository:
             if dirty:
                 raise ConflictError("Checkout refused modified or missing tracked files: " + ", ".join(dirty))
             validate_snapshot({**old, **target})
+            for name in sorted(set(old) | set(target)):
+                ensure_portable_existing_path(self.root, name)
             changes = {
                 name: {"before": old.get(name), "after": target.get(name)}
                 for name in sorted(set(old) | set(target))

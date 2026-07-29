@@ -116,6 +116,18 @@ def canonical_user_path(root: Path, cwd: Path, raw: str, *, require_file: bool =
     return stored, absolute
 
 
+def ensure_portable_existing_path(root: Path, stored: str) -> None:
+    validate_stored_path(stored)
+    current = root
+    for component in PurePosixPath(stored).parts:
+        if not current.is_dir():
+            return
+        matches = [entry.name for entry in os.scandir(current) if entry.name.casefold() == component.casefold()]
+        if matches and component not in matches:
+            raise PathError(f"Existing path spelling collides portably: {matches[0]!r} and {component!r}")
+        current /= component
+
+
 def discover_root(start: Path | None = None) -> Path:
     current = Path(os.path.abspath(start or Path.cwd()))
     for candidate in (current, *current.parents):
