@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Fixture blobs are byte-for-byte object payloads.
+tests/fixtures/legacy/objects/blobs/* -text
