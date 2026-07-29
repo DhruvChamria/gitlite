@@ -93,6 +93,33 @@ class StorageTests(unittest.TestCase):
                 self.assertIsNone(status.head)
                 self.assertEqual(status.rows, ())
 
+    def test_concurrent_initializers_leave_one_valid_repository(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main = Path(__file__).resolve().parents[1] / "main.py"
+            processes = [
+                subprocess.Popen([sys.executable, str(main), "init"], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for _ in range(2)
+            ]
+            results = [process.communicate(timeout=10) + (process.returncode,) for process in processes]
+            self.assertTrue(any(code == 0 for _, _, code in results), results)
+            with working_directory(root):
+                repo = Repository()
+                self.assertIsNone(repo.status().head)
+            self.assertTrue((root / ".mygit/index.json").is_file())
+
+    def test_hard_linked_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp, working_directory(Path(temp)):
+            root = Path(temp)
+            repo = Repository(root, discover=False)
+            repo.init()
+            backing = root / ".mygit/index-backing"
+            backing.write_bytes(repo.store.index.read_bytes())
+            repo.store.index.unlink()
+            repo.store.index.hardlink_to(backing)
+            with self.assertRaises(CorruptionError):
+                repo.status()
+
 
 if __name__ == "__main__":
     unittest.main()

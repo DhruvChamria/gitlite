@@ -44,6 +44,8 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "init":
         print(Repository(discover=False).init())
         return 0
+    if args.command == "commit" and bool(args.message) == bool(args.legacy_message):
+        raise UsageError("Supply exactly one commit message: -m MESSAGE or legacy positional MESSAGE.")
     repo = Repository()
     if args.command == "add":
         print("\n".join(repo.add(args.paths)))
@@ -52,8 +54,6 @@ def run(args: argparse.Namespace) -> int:
     elif args.command == "unstage":
         print("\n".join(repo.unstage(args.paths)))
     elif args.command == "commit":
-        if bool(args.message) == bool(args.legacy_message):
-            raise UsageError("Supply exactly one commit message: -m MESSAGE or legacy positional MESSAGE.")
         commit_id, parent = repo.commit(args.message or args.legacy_message)
         print(f"Committed as {commit_id}\nParent: {parent or 'none'}")
     elif args.command == "log":

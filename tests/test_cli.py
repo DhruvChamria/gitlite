@@ -47,6 +47,19 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertTrue(result.stderr)
 
+    def test_arity_errors_and_leading_dash_filename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for args in (("add",), ("checkout",), ("init", "extra"), ("commit",)):
+                with self.subTest(args=args):
+                    result = self.run_cli(root, *args)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertTrue(result.stderr)
+            self.assertEqual(self.run_cli(root, "init").returncode, 0)
+            (root / "-note.txt").write_bytes(b"note")
+            result = self.run_cli(root, "add", "--", "-note.txt")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

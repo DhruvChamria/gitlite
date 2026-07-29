@@ -4,6 +4,8 @@ import unittest
 
 from gitlite.errors import PathError
 from gitlite.paths import canonical_user_path, validate_snapshot, validate_stored_path
+from gitlite.repository import Repository
+from tests.helpers import working_directory
 
 
 class PathTests(unittest.TestCase):
@@ -29,6 +31,24 @@ class PathTests(unittest.TestCase):
         for snapshot in ({"Folder/a": "x", "folder/b": "y"}, {"A": "x", "a/b": "y"}):
             with self.assertRaises(PathError):
                 validate_snapshot(snapshot)
+
+    def test_production_guards_reject_symlink_and_allow_worktree_hardlink(self):
+        with tempfile.TemporaryDirectory() as temp, working_directory(Path(temp)):
+            root = Path(temp)
+            repo = Repository(root, discover=False)
+            repo.init()
+            source = root / "source.txt"
+            source.write_bytes(b"data")
+            hard = root / "hard.txt"
+            hard.hardlink_to(source)
+            repo.add(["hard.txt"])
+            link = root / "link.txt"
+            try:
+                link.symlink_to(source)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(PathError):
+                repo.add(["link.txt"])
 
 
 if __name__ == "__main__":
