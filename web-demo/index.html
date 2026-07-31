@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Run the real GitLite snapshot CLI safely in an isolated browser filesystem.">
+    <title>GitLite Browser Lab</title>
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <a class="eyebrow" href="https://github.com/DhruvChamria/gitlite">GitLite · interactive portfolio demo</a>
+          <h1>Version-control internals,<br><span>visible in your browser.</span></h1>
+          <p class="lede">Stage bytes, create immutable snapshots, inspect H/I/W state, and watch safe checkout refuse local edits—all inside an isolated in-memory filesystem.</p>
+        </div>
+        <div class="runtime-card" aria-live="polite">
+          <span id="runtime-dot" class="status-dot loading"></span>
+          <div>
+            <strong id="runtime-status">Loading Python runtime…</strong>
+            <small>No server and no access to your device files</small>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <section class="tour" aria-labelledby="tour-heading">
+          <div class="section-heading">
+            <div>
+              <p class="kicker">Guided path</p>
+              <h2 id="tour-heading">See the model in six commands</h2>
+            </div>
+            <button id="run-tour" class="button primary" disabled>Run guided demo</button>
+          </div>
+          <div class="steps">
+            <button class="step" data-command="gitlite init" disabled><span>01</span><code>init</code><small>Reserve repository metadata</small></button>
+            <button class="step" data-action="seed" disabled><span>02</span><code>write notes.txt</code><small>Create a working file</small></button>
+            <button class="step" data-command="gitlite add notes.txt" disabled><span>03</span><code>add</code><small>Capture exact bytes in I</small></button>
+            <button class="step" data-command="gitlite diff --staged" disabled><span>04</span><code>diff --staged</code><small>Compare H → I</small></button>
+            <button class="step" data-command='gitlite commit -m "browser snapshot"' disabled><span>05</span><code>commit</code><small>Create an immutable object</small></button>
+            <button class="step" data-command="gitlite fsck" disabled><span>06</span><code>fsck</code><small>Verify hashes and references</small></button>
+          </div>
+        </section>
+
+        <section class="workspace" aria-label="Interactive GitLite workspace">
+          <article class="panel terminal-panel">
+            <div class="panel-bar">
+              <div>
+                <p class="kicker">Terminal</p>
+                <h2>GitLite CLI</h2>
+              </div>
+              <button id="clear-output" class="button ghost">Clear output</button>
+            </div>
+            <div id="terminal" class="terminal" role="log" aria-live="polite" aria-label="Command output">
+              <p class="muted-line">Booting CPython through WebAssembly…</p>
+            </div>
+            <form id="command-form" class="command-row">
+              <label for="command-input" class="prompt" aria-label="Command prompt">$</label>
+              <input id="command-input" type="text" value="gitlite status" spellcheck="false" autocomplete="off" disabled aria-label="GitLite command">
+              <button class="button primary" type="submit" disabled>Run</button>
+            </form>
+            <p class="hint">Try <code>gitlite status</code>, <code>gitlite log --all</code>, or <code>gitlite show</code>. Only GitLite commands run here.</p>
+          </article>
+
+          <aside class="right-column">
+            <article class="panel file-panel">
+              <div class="panel-bar compact">
+                <div>
+                  <p class="kicker">Working tree</p>
+                  <h2>File editor</h2>
+                </div>
+                <button id="save-file" class="button secondary" disabled>Save file</button>
+              </div>
+              <label class="field-label" for="filename">File name</label>
+              <input id="filename" class="filename" value="notes.txt" spellcheck="false" disabled>
+              <label class="field-label" for="file-content">Contents</label>
+              <textarea id="file-content" disabled>GitLite stores immutable snapshots.
+</textarea>
+              <p id="file-status" class="file-status">The editor writes only to the browser sandbox.</p>
+            </article>
+
+            <article class="panel explainer">
+              <p class="kicker">Mental model</p>
+              <div class="state-flow" aria-label="Working tree to index to HEAD flow">
+                <div><strong>W</strong><span>working bytes</span></div>
+                <b>→</b>
+                <div><strong>I</strong><span>staged snapshot</span></div>
+                <b>→</b>
+                <div><strong>H</strong><span>HEAD snapshot</span></div>
+              </div>
+              <p>Objects are immutable. HEAD, the index, and a bounded recovery journal are the small mutable pieces.</p>
+              <button id="reset-workspace" class="button danger" disabled>Reset browser workspace</button>
+            </article>
+          </aside>
+        </section>
+
+        <section class="safety-note">
+          <strong>Safe by construction.</strong>
+          <p>This demo runs GitLite’s Python package with Pyodide’s browser filesystem. Refreshing or resetting discards the sandbox. It cannot read or alter files on your computer.</p>
+        </section>
+      </main>
+
+      <footer>
+        <span>GitLite 0.1.0 · Git-inspired, not Git-compatible</span>
+        <a href="https://github.com/DhruvChamria/gitlite">View source on GitHub ↗</a>
+      </footer>
+    </div>
+  </body>
+</html>

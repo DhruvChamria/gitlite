@@ -1,0 +1,52 @@
+name: Deploy browser demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Smoke-test Pyodide runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pyodide-smoke" pyodide@314.0.7
+          cp tests/browser_smoke.mjs "$RUNNER_TEMP/pyodide-smoke/browser_smoke.mjs"
+          node "$RUNNER_TEMP/pyodide-smoke/browser_smoke.mjs" "$GITHUB_WORKSPACE"
+      - name: Assemble static site
+        run: |
+          mkdir -p _site/gitlite
+          cp -R web-demo/. _site/
+          cp gitlite/*.py _site/gitlite/
+          touch _site/.nojekyll
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

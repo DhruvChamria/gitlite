@@ -15,6 +15,12 @@ gitlite --version
 
 From a source checkout, `python -m gitlite` and `python main.py` are equivalent entry points. For development, use `python -m pip install -e .`.
 
+## Browser demo
+
+The hosted [GitLite Browser Lab](https://dhruvchamria.github.io/gitlite/) runs the real Python package through Pyodide in an isolated in-memory browser filesystem. It includes a guided safety scenario, terminal-style GitLite commands, and a small working-file editor. The page cannot access files on the visitor's computer.
+
+The static source is in `web-demo/`. GitHub Pages deployment is configured in `.github/workflows/pages.yml`; the URL becomes available after the workflow is enabled and successfully runs on the default branch. The command-line package remains the source of truth.
+
 ## Five-minute quick start
 
 Run these commands in a disposable scratch directory, not in a project with irreplaceable uncommitted work:
@@ -68,7 +74,7 @@ HEAD snapshot (H) -> parent snapshot -> ...
       +---- commit objects -----+---- blob objects by SHA-1
 ```
 
-The index is a delta over HEAD: blob IDs stage additions or changes and `null` stages deletions. Objects are immutable; HEAD, the index, and the operation journal are the small mutable pointers. See [architecture](docs/architecture.md), [safety and recovery](docs/safety.md), and the [approved implementation plan](docs/implementation-plan.md).
+The index is a delta over HEAD: blob IDs stage additions or changes and `null` stages deletions. Objects are immutable; HEAD, the index, and the operation journal are the small mutable pointers. See [architecture](docs/architecture.md) and [safety and recovery](docs/safety.md).
 
 ## Test
 
@@ -78,7 +84,7 @@ python examples/demo.py
 git diff --check
 ```
 
-CI is configured for Windows and Linux with Python 3.11 and 3.14. A checked-in workflow is configuration, not a claim that hosted jobs have run.
+CI is configured for Windows and Linux with Python 3.11 and 3.14. A checked-in workflow is configuration, not a claim that hosted jobs have run. The browser demo has a separate Pages deployment workflow.
 
 ## Limits
 

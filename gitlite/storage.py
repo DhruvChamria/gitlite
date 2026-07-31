@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 from typing import Any, Iterator
 
@@ -52,7 +53,8 @@ def atomic_write(path: Path, data: bytes, *, reject_hardlinks: bool = True) -> N
         with handle:
             handle.write(data)
             handle.flush()
-            os.fsync(handle.fileno())
+            if sys.platform != "emscripten":
+                os.fsync(handle.fileno())
         os.replace(temp, path)
     except BaseException:
         try:
@@ -80,6 +82,8 @@ class RepositoryLock:
             self.path.write_bytes(b"0")
         self.handle = self.path.open("r+b", buffering=0)
         try:
+            if sys.platform == "emscripten":
+                return self
             self.handle.seek(0)
             if os.name == "nt":
                 import msvcrt
@@ -97,6 +101,8 @@ class RepositoryLock:
         if self.handle is None:
             return
         try:
+            if sys.platform == "emscripten":
+                return
             self.handle.seek(0)
             if os.name == "nt":
                 import msvcrt
