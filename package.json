@@ -1,0 +1,10 @@
+{
+  "name": "gitlite-browser-smoke",
+  "private": true,
+  "license": "UNLICENSED",
+  "version": "0.1.0",
+  "description": "Pinned browser-runtime dependency for GitLite's smoke test and Pages deployment",
+  "devDependencies": {
+    "pyodide": "314.0.7"
+  }
+}

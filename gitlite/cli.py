@@ -67,7 +67,7 @@ def run(args: argparse.Namespace) -> int:
         item = repo.show(args.commit)
         print(f"commit {item['hash']}\nParent: {item['parent'] or 'none'}\nDate:   {item['timestamp']}\nMessage: {_safe(item['message'])}")
         for name, blob in sorted(item["files"].items()):
-            print(f"{name} {blob}")
+            print(f"{_safe(name)} {blob}")
     elif args.command == "checkout":
         print(f"Checked out commit {repo.checkout(args.commit)}")
     elif args.command == "recover":
@@ -95,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
         print("=== GitLite Status ===")
         print(f"HEAD: {status.head or 'No commits yet'}")
         print("XY Path (X: HEAD/index, Y: index/worktree)")
-        print("\n".join(status.rows) if status.rows else "Working tree clean.")
+        print("\n".join(_safe(row) for row in status.rows) if status.rows else "Working tree clean.")
     return 0
 
 
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         return run(parser.parse_args(argv))
     except UsageError as exc:
         parser.error(str(exc))
-    except (GitLiteError, OSError, UnicodeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except (GitLiteError, OSError, UnicodeError, RecursionError) as exc:
+        print(f"error: {_safe(str(exc))}", file=sys.stderr)
         return 1
     return 2

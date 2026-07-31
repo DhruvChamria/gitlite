@@ -2,7 +2,7 @@
 
 GitLite accepts explicit regular-file paths only. CLI paths are relative to the invocation directory and may use `..` only when the final path remains inside the nearest repository. Stored names use normalized `/` separators. Metadata names, control characters, Windows device names, trailing dots/spaces, portable case collisions, and file/directory collisions are rejected.
 
-The hosted Browser Lab runs in Pyodide's in-memory filesystem. It cannot access visitor files, uses a single in-page command stream instead of an OS advisory lock, and skips physical-disk `fsync` because browser memory has no such durability boundary. Refreshing or resetting discards that sandbox. Native CLI behavior retains the OS lock and flushed atomic-write contract described below.
+The hosted Browser Lab runs in Pyodide's in-memory filesystem. The pinned runtime is installed from the committed npm lockfile and bundled into the Pages artifact rather than executed from a third-party CDN. It cannot access visitor files, uses a single in-page command stream instead of an OS advisory lock, and skips physical-disk `fsync` because browser memory has no such durability boundary. Refreshing or resetting discards that sandbox. Native CLI behavior retains the OS lock and flushed atomic-write contract described below.
 
 GitLite never follows symlinks, junctions, or reparse points in repository metadata or worktree paths. Status reports unsupported non-excluded entries with `!!`. Built-in scan exclusions are `.git`, `.mygit`, `.venv`, `venv`, `__pycache__`, `*.pyc`, and `*.pyo`. This is not a configurable ignore language. An already tracked cache path remains tracked.
 
@@ -31,6 +31,8 @@ Recovery always rolls back. It verifies journal paths, commits, blobs, exact cha
 Legacy commit hashes and string-only indexes remain valid. New `null` deletion entries are not understood by the old executable; do not use an older GitLite version to write a repository after staging a deletion with this release.
 
 Run `gitlite fsck` to validate HEAD, index, commit and blob schemas and hashes, references, portable path rules, cycles, and pending operations. It retains unreachable valid objects and interruption residue. Preserve `.mygit` before manual repair or forensic work.
+
+JSON metadata is limited to 16 MiB per file and 64 container levels. Inputs beyond those bounds are reported as corruption instead of risking unbounded parser or validation work. Initialization also refuses to create a repository beneath an existing parent repository.
 
 ## Guarantee boundary
 

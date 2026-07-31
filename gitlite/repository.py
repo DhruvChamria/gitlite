@@ -9,7 +9,7 @@ import stat
 from .errors import ConflictError, CorruptionError, PathError, RecoveryError, RepositoryError
 from .models import Commit, IntegrityResult, StatusResult
 from .models import sha1_bytes
-from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, ensure_portable_existing_path, is_excluded, is_link_like, validate_snapshot
+from .paths import EXCLUDED_DIRS, canonical_user_path, discover_root, ensure_no_links, ensure_portable_existing_path, is_excluded, is_link_like, validate_snapshot
 from .storage import Store, atomic_write
 from .transactions import load_journal, rollback, write_journal
 
@@ -22,6 +22,11 @@ class Repository:
         self.store = Store(self.root)
 
     def init(self) -> str:
+        if not (self.store.repo.exists() or is_link_like(self.store.repo)):
+            for parent in self.root.parents:
+                marker = parent / ".mygit"
+                if marker.exists() or is_link_like(marker):
+                    raise RepositoryError(f"Refusing to initialize a nested repository inside {parent}.")
         store, created = Store.initialize(self.root)
         if store.transaction.exists():
             raise RecoveryError("Interrupted operation detected. Run `gitlite recover` before continuing.")
@@ -92,7 +97,7 @@ class Repository:
             self._ensure_ready()
             head = self._snapshot_unlocked()
             index = self.store.read_index()
-            names = [canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths]
+            names = list(dict.fromkeys(canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths))
             for name in names:
                 if name not in head and name not in index:
                     raise RepositoryError(f"Path is not tracked or staged: {name}")
@@ -112,7 +117,7 @@ class Repository:
         with self.store.locked():
             self._ensure_ready()
             index = self.store.read_index()
-            names = [canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths]
+            names = list(dict.fromkeys(canonical_user_path(self.root, Path.cwd(), raw)[0] for raw in paths))
             missing = [name for name in names if name not in index]
             if missing:
                 raise RepositoryError(f"Path is not staged: {missing[0]}")
@@ -165,12 +170,24 @@ class Repository:
             if all_commits:
                 result = []
                 head = self.store.read_head()
+                commits: dict[str, Commit] = {}
                 for path in self.store.commits.iterdir():
+                    if path.name.startswith(".gitlite-tmp-"):
+                        continue
                     if not path.is_file() or not path.name.endswith(".json"):
                         raise CorruptionError(f"Invalid commit object filename: {path.name}; run `gitlite fsck`.")
                     commit_id = path.name[:-5]
                     commit = self.store.read_commit(commit_id)
+                    commits[commit_id] = commit
                     result.append({"hash": commit_id, "is_head": commit_id == head, **commit.to_dict()})
+                for commit_id, commit in commits.items():
+                    if commit.parent is not None and commit.parent not in commits:
+                        raise CorruptionError(f"Commit {commit_id} references missing parent {commit.parent}; run `gitlite fsck`.")
+                    for name, blob_id in commit.files.items():
+                        try:
+                            self.store.read_blob(blob_id)
+                        except CorruptionError as exc:
+                            raise CorruptionError(f"Commit {commit_id} path {name} references an invalid blob; run `gitlite fsck`.") from exc
                 result.sort(key=lambda item: item["hash"])
                 result.sort(key=lambda item: datetime.fromisoformat(item["timestamp"]), reverse=True)
                 return result
@@ -182,6 +199,8 @@ class Repository:
                     raise CorruptionError("Commit history contains a cycle; run `gitlite fsck`.")
                 seen.add(commit_id)
                 commit = self.store.read_commit(commit_id)
+                for blob_id in commit.files.values():
+                    self.store.read_blob(blob_id)
                 result.append({"hash": commit_id, **commit.to_dict()})
                 commit_id = commit.parent
             return result
@@ -193,6 +212,16 @@ class Repository:
             if selected is None:
                 raise RepositoryError("No commits yet.")
             commit = self.store.read_commit(selected)
+            if commit.parent is not None:
+                try:
+                    self.store.read_commit(commit.parent)
+                except CorruptionError as exc:
+                    raise CorruptionError(f"Commit {selected} references missing parent {commit.parent}; run `gitlite fsck`.") from exc
+            for name, blob_id in commit.files.items():
+                try:
+                    self.store.read_blob(blob_id)
+                except CorruptionError as exc:
+                    raise CorruptionError(f"Commit {selected} path {name} references an invalid blob; run `gitlite fsck`.") from exc
             return {"hash": selected, **commit.to_dict()}
 
     def checkout(self, commit_id: str) -> str:
@@ -286,8 +315,15 @@ class Repository:
         head: str | None = None
         index: dict[str, str | None] = {}
         with self.store.diagnostic_lock():
+            safe_directories: dict[Path, bool] = {}
             for directory, label in ((self.store.objects, "objects"), (self.store.blobs, "blob"), (self.store.commits, "commit")):
-                if not directory.is_dir() or is_link_like(directory):
+                try:
+                    ensure_no_links(directory, stop=self.root)
+                    safe = directory.is_dir()
+                except PathError:
+                    safe = False
+                safe_directories[directory] = safe
+                if not safe:
                     errors.append(f"Missing or unsafe {label} directory: {directory.relative_to(self.root)}")
             try:
                 head = self.store.read_head()
@@ -303,7 +339,7 @@ class Repository:
                             errors.append(f"index {name}: {exc}")
             except Exception as exc:
                 errors.append(f"index.json: {exc}")
-            if self.store.blobs.is_dir():
+            if safe_directories[self.store.blobs]:
                 for path in sorted(self.store.blobs.iterdir(), key=lambda item: item.name):
                     if path.name.startswith(".gitlite-tmp-"):
                         information.append(f"Interruption residue preserved: objects/blobs/{path.name}")
@@ -313,7 +349,7 @@ class Repository:
                         blobs.add(path.name)
                     except Exception as exc:
                         errors.append(f"blob {path.name}: {exc}")
-            if self.store.commits.is_dir():
+            if safe_directories[self.store.commits]:
                 for path in sorted(self.store.commits.iterdir(), key=lambda item: item.name):
                     if path.name.startswith(".gitlite-tmp-"):
                         information.append(f"Interruption residue preserved: objects/commits/{path.name}")
@@ -332,20 +368,22 @@ class Repository:
                 for name, blob in commit.files.items():
                     if blob not in blobs:
                         errors.append(f"commit {commit_id} path {name}: missing or corrupt blob {blob}")
-            state: dict[str, int] = {}
-            def visit(commit_id: str, trail: list[str]) -> None:
-                if state.get(commit_id) == 1:
-                    errors.append("Commit parent cycle: " + " -> ".join((*trail, commit_id)))
-                    return
-                if state.get(commit_id) == 2 or commit_id not in commits:
-                    return
-                state[commit_id] = 1
-                parent = commits[commit_id].parent
-                if parent is not None:
-                    visit(parent, [*trail, commit_id])
-                state[commit_id] = 2
-            for commit_id in sorted(commits):
-                visit(commit_id, [])
+            complete: set[str] = set()
+            for start in sorted(commits):
+                if start in complete:
+                    continue
+                trail: list[str] = []
+                positions: dict[str, int] = {}
+                current: str | None = start
+                while current is not None and current in commits and current not in complete:
+                    if current in positions:
+                        cycle = trail[positions[current]:] + [current]
+                        errors.append("Commit parent cycle: " + " -> ".join(cycle))
+                        break
+                    positions[current] = len(trail)
+                    trail.append(current)
+                    current = commits[current].parent
+                complete.update(trail)
             if head is not None and head not in commits:
                 errors.append(f"HEAD references missing or corrupt commit {head}")
             if self.store.transaction.exists():

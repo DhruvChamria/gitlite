@@ -13,9 +13,14 @@ from .models import Commit, sha1_bytes
 from .paths import RESERVED_PREFIX, ensure_no_links, is_link_like, validate_snapshot, validate_stored_path
 
 
+MAX_JSON_BYTES = 16 * 1024 * 1024
+MAX_JSON_DEPTH = 64
+
+
 def validate_id(value: object, label: str = "object ID") -> str:
     if not isinstance(value, str) or len(value) != 40 or value != value.lower() or any(c not in "0123456789abcdef" for c in value):
-        raise CorruptionError(f"Invalid {label}: {value!r}")
+        rendered = repr(value) if isinstance(value, str) and len(value) <= 80 else f"<{type(value).__name__}>"
+        raise CorruptionError(f"Invalid {label}: {rendered}")
     return value
 
 
@@ -31,14 +36,29 @@ def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def read_json(path: Path) -> Any:
     try:
         ensure_no_links(path, stop=path.parent)
-        if path.stat().st_nlink > 1:
+        info = path.stat()
+        if info.st_nlink > 1:
             raise CorruptionError(f"Hard-linked metadata file is unsupported: {path.name}")
+        if info.st_size > MAX_JSON_BYTES:
+            raise CorruptionError(f"JSON metadata is too large: {path.name}")
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle, object_pairs_hook=_reject_duplicates)
+            value = json.load(handle, object_pairs_hook=_reject_duplicates)
+        stack = [(value, 0)]
+        while stack:
+            current, depth = stack.pop()
+            if depth > MAX_JSON_DEPTH:
+                raise CorruptionError(f"JSON metadata is nested too deeply: {path.name}")
+            if isinstance(current, dict):
+                stack.extend((item, depth + 1) for item in current.values())
+            elif isinstance(current, list):
+                stack.extend((item, depth + 1) for item in current)
+        return value
     except FileNotFoundError as exc:
         raise CorruptionError(f"Missing required metadata: {path.name}") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise CorruptionError(f"Malformed JSON in {path.name}: {exc}") from exc
+    except RecursionError as exc:
+        raise CorruptionError(f"JSON metadata is nested too deeply: {path.name}") from exc
 
 
 def atomic_write(path: Path, data: bytes, *, reject_hardlinks: bool = True) -> None:
@@ -151,7 +171,7 @@ class Store:
     def validate_structure(self) -> None:
         ensure_no_links(self.repo, stop=self.root)
         for directory in (self.repo, self.objects, self.blobs, self.commits):
-            if not directory.is_dir() or is_link_like(directory):
+            if is_link_like(directory) or not directory.is_dir():
                 raise CorruptionError(f"Incomplete repository: missing safe directory {directory.relative_to(self.root)}. Move .mygit aside after inspection, then rerun init.")
         for file in (self.head, self.index):
             if not file.is_file() or is_link_like(file) or file.stat().st_nlink > 1:
@@ -165,7 +185,7 @@ class Store:
 
     @contextmanager
     def diagnostic_lock(self) -> Iterator[None]:
-        if not self.repo.is_dir() or is_link_like(self.repo):
+        if is_link_like(self.repo) or not self.repo.is_dir():
             raise CorruptionError("Repository metadata directory is missing or unsafe.")
         ensure_no_links(self.repo, stop=self.root)
         with RepositoryLock(self.lock_path):

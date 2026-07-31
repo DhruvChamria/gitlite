@@ -12,6 +12,9 @@ build/
 dist/
 *.egg-info/
 
+# Browser smoke-test dependencies
+node_modules/
+
 # Virtual environments
 .venv/
 venv/

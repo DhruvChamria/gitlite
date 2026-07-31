@@ -1,4 +1,4 @@
-const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
+const PYODIDE_BASE = "./pyodide/";
 const MODULES = [
   "__init__.py",
   "errors.py",
@@ -194,8 +194,9 @@ async function initialize() {
     pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
     await loadSource();
     bootstrapPython();
+    const version = pythonCall("__import__('gitlite').__version__");
     terminal.replaceChildren();
-    appendOutput("GitLite 0.1.0 ready in an isolated CPython 3.14 browser runtime.", "success");
+    appendOutput(`GitLite ${version} ready in an isolated CPython 3.14 browser runtime.`, "success");
     appendOutput("Run the guided demo or enter a GitLite command below.", "muted-line");
     runtimeStatus.textContent = "Browser runtime ready";
     runtimeDot.className = "status-dot ready";
@@ -206,7 +207,7 @@ async function initialize() {
     runtimeDot.className = "status-dot error";
     terminal.replaceChildren();
     appendOutput(`startup error: ${error.message}`, "error");
-    appendOutput("Check your network connection; Pyodide is loaded from its versioned CDN.", "muted-line");
+    appendOutput("Reload the page; the bundled browser runtime could not be initialized.", "muted-line");
   }
 }
 

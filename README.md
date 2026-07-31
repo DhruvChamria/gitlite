@@ -17,7 +17,7 @@ From a source checkout, `python -m gitlite` and `python main.py` are equivalent 
 
 ## Browser demo
 
-The hosted [GitLite Browser Lab](https://dhruvchamria.github.io/gitlite/) runs the real Python package through Pyodide in an isolated in-memory browser filesystem. It includes a guided safety scenario, terminal-style GitLite commands, and a small working-file editor. The page cannot access files on the visitor's computer.
+The hosted [GitLite Browser Lab](https://dhruvchamria.github.io/gitlite/) runs the real Python package through a deployment-bundled Pyodide runtime in an isolated in-memory browser filesystem. It includes a guided safety scenario, terminal-style GitLite commands, and a small working-file editor. The page cannot access files on the visitor's computer.
 
 The static source is in `web-demo/`. GitHub Pages deployment is configured in `.github/workflows/pages.yml`; the URL becomes available after the workflow is enabled and successfully runs on the default branch. The command-line package remains the source of truth.
 
@@ -81,10 +81,12 @@ The index is a delta over HEAD: blob IDs stage additions or changes and `null` s
 ```console
 python -m unittest discover -s tests -v
 python examples/demo.py
+npm ci --ignore-scripts
+node tests/browser_smoke.mjs .
 git diff --check
 ```
 
-CI is configured for Windows and Linux with Python 3.11 and 3.14. A checked-in workflow is configuration, not a claim that hosted jobs have run. The browser demo has a separate Pages deployment workflow.
+CI is configured for Windows and Linux with Python 3.11 through 3.14. A checked-in workflow is configuration, not a claim that hosted jobs have run. The browser demo has a separate Pages deployment workflow.
 
 ## Limits
 
